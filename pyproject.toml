@@ -1,0 +1,19 @@
+[project]
+name = "agent-growth"
+version = "0.1.0"
+description = "Git-like, auditable, rollback-able growth layer for AI agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Guangzhi Yongxian" }]
+keywords = ["ai", "agent", "memory", "mcp", "claude", "cursor", "growth"]
+
+[project.scripts]
+growth = "growth.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["growth"]
