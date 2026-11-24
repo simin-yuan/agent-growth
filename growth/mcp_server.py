@@ -1,11 +1,11 @@
 """Zero-dependency MCP server (JSON-RPC 2.0 over stdio).
 
-Exposes five tools:
-    growth_get_rules      -> prompt block of active rules
-    growth_learn          -> extract + conflict-check + store a rule from a correction
-    growth_resolve        -> resolve a conflict rule (keep-new / keep-old / keep-both)
-    growth_rollback       -> revert a rule by id
-    growth_log            -> recent rule history
+Tools:
+    growth_get_rules
+    growth_learn      host-driven rule extraction -> zero API key in MCP mode
+    growth_resolve
+    growth_rollback
+    growth_log
 """
 
 from __future__ import annotations
@@ -18,13 +18,17 @@ from .extract import extract_rule
 from .inject import build_prompt_block
 from .store import RuleStore
 
-_SERVER_INFO = {"name": "growth", "version": "0.2.0"}
+_SERVER_INFO = {"name": "growth", "version": "0.3.0"}
 
 _INSTRUCTIONS = (
-    "agent-growth is a Git-like growth layer. At session start call growth_get_rules and follow them. "
-    "When the user corrects you or states a preference, call growth_learn with the correction. "
-    "If growth_learn returns status=conflict, show the user the conflicting rule and, after they decide, "
-    "call growth_resolve with action keep-new | keep-old | keep-both. "
+    "agent-growth is a Git-like, conflict-checked growth layer for you. "
+    "At session start call growth_get_rules and follow them. "
+    "Before calling growth_learn, call growth_get_rules first: (1) distill the user's correction into ONE clear rule "
+    "and pass it as `rule`; (2) if that rule contradicts an existing rule, pass the conflicting rule id in "
+    "`conflicts_with` (an empty list if none). This enables zero-API-key mode. "
+    "If `rule` is omitted, the server falls back to GROWTH_LLM_KEY or stores the raw correction. "
+    "If growth_learn returns status=conflict, show the user the conflicting rule and, after they decide, call "
+    "growth_resolve with action keep-new | keep-old | keep-both. "
     "Report the new rule id and the rollback command."
 )
 
@@ -36,12 +40,25 @@ _TOOLS = [
     },
     {
         "name": "growth_learn",
-        "description": "Record a user correction; extract, conflict-check and store a reusable rule.",
+        "description": (
+            "Record a user correction as a reusable rule. "
+            "Pass `rule` (one clear sentence you extracted) and `conflicts_with` "
+            "(ids of existing rules it contradicts, [] if none) to work without any API key."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "correction": {"type": "string", "description": "What the user corrected"},
                 "context": {"type": "string", "description": "Optional task context"},
+                "rule": {
+                    "type": "string",
+                    "description": "Host-extracted one-line rule (recommended; enables zero-API-key mode)",
+                },
+                "conflicts_with": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "IDs of existing active rules this rule contradicts (from growth_get_rules)",
+                },
             },
             "required": ["correction"],
         },
@@ -84,6 +101,55 @@ def _text(payload) -> dict:
     return {"content": [{"type": "text", "text": payload}]}
 
 
+def _learn(
+    store: RuleStore,
+    correction: str,
+    context: str = "",
+    rule: str | None = None,
+    conflicts_with: list[str] | None = None,
+) -> dict:
+    """Host-driven learning.
+
+    Priority for the rule text:
+      1. `rule` supplied by the host agent (zero API key)
+      2. LLM extraction (if GROWTH_LLM_KEY is set)
+      3. raw correction fallback
+    Priority for conflict detection:
+      1. `conflicts_with` supplied by the host (zero API key) — [] means "no conflict"
+      2. LLM conflict check (if GROWTH_LLM_KEY is set)
+      3. no conflict
+    """
+    if rule and rule.strip():
+        rule_text = rule.strip()
+    else:
+        rule_text = extract_rule(correction, context)
+    if not rule_text:
+        return {"status": "skipped", "reason": "not a reusable rule"}
+
+    if conflicts_with is not None:
+        ids = [str(x).strip() for x in conflicts_with if str(x).strip()]
+        reason = "host-detected conflict" if ids else ""
+    else:
+        conf = check_conflict(rule_text, store.active_rules())
+        ids = conf["ids"]
+        reason = conf["reason"]
+
+    active_ids = {r["id"] for r in store.active_rules()}
+    ids = [i for i in ids if i in active_ids]
+    status = "conflict" if ids else "active"
+    rid = store.add_rule(
+        rule_text,
+        source="mcp",
+        status=status,
+        conflicts_with=ids if ids else None,
+    )
+    payload = {"id": rid, "rule": rule_text, "status": status, "rollback": f"growth rollback {rid}"}
+    if ids:
+        payload["conflict"] = {"reason": reason or "host-detected conflict", "ids": ids}
+        payload["hint"] = "call growth_resolve(rule_id, action) after the user decides"
+    return payload
+
+
 def _handle(msg: dict, store: RuleStore) -> dict | None:
     method = msg.get("method")
     if method == "initialize":
@@ -104,21 +170,13 @@ def _handle(msg: dict, store: RuleStore) -> dict | None:
             return _text(build_prompt_block(store))
 
         if name in ("growth_learn", "growth_add_correction"):
-            rule = extract_rule(args.get("correction", ""), args.get("context", ""))
-            if not rule:
-                return _text({"status": "skipped", "reason": "not a reusable rule"})
-            conf = check_conflict(rule, store.active_rules())
-            status = "conflict" if conf["conflict"] else "active"
-            rid = store.add_rule(
-                rule,
-                source="mcp",
-                status=status,
-                conflicts_with=conf["ids"] if conf["conflict"] else None,
+            payload = _learn(
+                store,
+                args.get("correction", ""),
+                args.get("context", ""),
+                args.get("rule"),
+                args.get("conflicts_with"),
             )
-            payload = {"id": rid, "rule": rule, "status": status, "rollback": f"growth rollback {rid}"}
-            if conf["conflict"]:
-                payload["conflict"] = {"reason": conf["reason"], "ids": conf["ids"]}
-                payload["hint"] = "call growth_resolve(rule_id, action) after the user decides"
             return _text(payload)
 
         if name == "growth_resolve":

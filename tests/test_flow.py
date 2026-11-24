@@ -110,6 +110,66 @@ class FlowTests(unittest.TestCase):
             )
             self.assertTrue(err.get("isError"))
 
+    def test_mcp_zero_key_conflict(self):
+        from growth.mcp_server import _handle
+
+        with tempfile.TemporaryDirectory() as d:
+            store = RuleStore(d)
+            old = store.add_rule("use Chinese comments")
+            out = _handle(
+                {
+                    "method": "tools/call",
+                    "params": {
+                        "name": "growth_learn",
+                        "arguments": {
+                            "correction": "use English comments",
+                            "rule": "use English comments",
+                            "conflicts_with": [old],
+                        },
+                    },
+                },
+                store,
+            )
+            payload = json.loads(out["content"][0]["text"])
+            self.assertEqual(payload["status"], "conflict")
+            self.assertNotIn(payload["id"], [r["id"] for r in store.active_rules()])
+            self.assertIn(old, payload["conflict"]["ids"])
+            res = _handle(
+                {
+                    "method": "tools/call",
+                    "params": {
+                        "name": "growth_resolve",
+                        "arguments": {"rule_id": payload["id"], "action": "keep-new"},
+                    },
+                },
+                store,
+            )
+            self.assertFalse(res.get("isError"))
+
+    def test_mcp_zero_key_no_conflict(self):
+        from growth.mcp_server import _handle
+
+        with tempfile.TemporaryDirectory() as d:
+            store = RuleStore(d)
+            store.add_rule("use Chinese comments")
+            out = _handle(
+                {
+                    "method": "tools/call",
+                    "params": {
+                        "name": "growth_learn",
+                        "arguments": {
+                            "correction": "add docstrings",
+                            "rule": "add docstrings",
+                            "conflicts_with": [],
+                        },
+                    },
+                },
+                store,
+            )
+            payload = json.loads(out["content"][0]["text"])
+            self.assertEqual(payload["status"], "active")
+            self.assertIn(payload["id"], [r["id"] for r in store.active_rules()])
+
 
 if __name__ == "__main__":
     unittest.main()

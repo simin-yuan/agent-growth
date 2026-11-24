@@ -1,12 +1,33 @@
 # agent-growth
 
-**A Git-like, auditable, rollback-able growth layer for AI agents.**
+**Git for Agent Memory — versioned, conflict-checked, rollback-able rules for Claude Code & Cursor. Zero extra API key.**
+
+[中文](./README_ZH.md)
+
+![demo](./demo.gif)
+
+```bash
+pip install git+https://github.com/simin-yuan/agent-growth.git && growth init --target claude
+```
 
 Your agent remembers. But does it get *better* — and can you prove it?
 
-Most "AI memory" stores facts. `agent-growth` stores **rules learned from your corrections**, versioned in Git, reviewable, conflict-checked, and revertible with one command. It is the missing *governance* layer between "the agent remembered something" and "the agent is trustworthy enough to keep improving."
+Most "AI memory" stores facts. `agent-growth` stores **rules learned from your corrections**, versioned in Git, conflict-checked, and revertible with one command. It is the missing *governance* layer between "the agent remembered something" and "the agent is trustworthy enough to keep improving."
 
-> 记住 ≠ 成长。可信的成长 = 纠正一次 → 沉淀一条规则 → 可审查、可冲突检测、可一键回滚。
+> Memory is not growth. Trustworthy growth = correction → rule → reviewable, conflict-checked, revertible.
+
+---
+
+## The 4 things a `CLAUDE.md` can't do
+
+| Capability | `CLAUDE.md` / `.cursorrules` | Mem0 | **agent-growth** |
+|---|---|---|---|
+| Auto-capture from corrections | manual edit | ✅ | ✅ |
+| Conflict isolation (never pollutes the prompt) | ❌ rules just pile up | ❌ | ✅ |
+| Git rollback in one command | ❌ | ❌ | ✅ |
+| Zero extra API key | — | ❌ | ✅ (MCP mode) |
+
+And it is **plain local files + Git** — no vector DB, no server, no lock-in.
 
 ---
 
@@ -25,50 +46,55 @@ Every self-evolving agent today has the same black hole: **it changes, but you c
 
 ---
 
-## What's new in v0.2
-
-- **Agent-driven learning** — the agent calls `growth_learn` itself when you correct it; no terminal commands needed.
-- **Conflict gate + resolution loop** — a contradicting rule is stored as `status: conflict`, never injected, and surfaced for a one-command decision: `keep-new` / `keep-old` / `keep-both`.
-- **One-command MCP setup** — `growth init --target claude|cursor` writes the MCP config for you (with `--dry-run` preview).
-- **Bring your own model** — any OpenAI-compatible endpoint (DeepSeek / Doubao / Tongyi / SiliconFlow / OpenAI) via `GROWTH_LLM_BASE_URL`.
-
----
-
 ## 30-second demo
 
 ```bash
-$ growth add "注释用中文"
-stored 20261124-031500-a1b2c3: 注释用中文 (status=active)
+$ growth add "comments in Chinese"
+stored 20261124-031500-a1b2c3: comments in Chinese (status=active)
 
-$ growth add "注释全用英文"
-stored 20261124-031600-d4e5f6: 注释全用英文 (status=conflict)
-!! conflict: contradicts a1b2c3 (注释用中文)
+$ growth add "comments must be English"
+stored 20261124-031600-d4e5f6: comments must be English (status=conflict)
+!! conflict: contradicts a1b2c3 (comments in Chinese)
 run `growth conflicts`, then `growth resolve <id> --keep-new|--keep-old|--keep-both`
-
-$ growth conflicts
-[20261124-031600-d4e5f6] 注释全用英文
-  conflicts with [20261124-031500-a1b2c3] 注释用中文
 
 $ growth resolve 20261124-031600-d4e5f6 --keep-new
 {"id": "20261124-031600-d4e5f6", "action": "keep-new", "superseded": ["20261124-031500-a1b2c3"]}
+
+$ growth rollback 20261124-031600-d4e5f6
+reverted 1f3c2a1
 ```
 
-The conflicting rule is now active, the old one is `superseded`, and `git log` shows exactly what happened and why.
+The conflicting rule never touches the prompt until you decide. After `resolve`, `git log` shows exactly what changed and why.
 
 ---
 
 ## Install
 
 ```bash
-pip install -e .
+pip install git+https://github.com/simin-yuan/agent-growth.git
+growth init --target claude     # writes .mcp.json
+growth init --target cursor     # writes .cursor/mcp.json
 ```
 
 Requires Python 3.9+ and `git` on PATH. No other dependencies.
 
-Optional — for LLM-powered rule extraction and conflict detection (otherwise the raw correction is stored as-is):
+---
+
+## Zero API key (MCP mode)
+
+Inside Claude Code / Cursor, the host model already *is* a strong LLM — you should not need a second key.
+
+`growth_learn` accepts host-computed values:
+
+- `rule` — one clear sentence the host extracted from the correction
+- `conflicts_with` — ids of existing rules it contradicts (`[]` if none)
+
+The host already calls `growth_get_rules`, so it has everything it needs. Result: **full extraction + conflict interception with no `GROWTH_LLM_KEY`, no extra token cost.**
+
+A standalone CLI / offline mode still works; set `GROWTH_LLM_KEY` only if you want server-side extraction:
 
 ```bash
-export GROWTH_LLM_KEY=sk-...                       # DeepSeek / Doubao / Tongyi / OpenAI compatible
+export GROWTH_LLM_KEY=sk-...
 export GROWTH_LLM_BASE_URL=https://api.deepseek.com/v1
 export GROWTH_LLM_MODEL=deepseek-chat
 ```
@@ -93,17 +119,14 @@ growth mcp                                   # run as an MCP server over stdio
 
 ## Use it from Claude Code / Cursor (MCP)
 
-One command:
-
 ```bash
-growth init --target claude     # writes .mcp.json
-growth init --target cursor     # writes .cursor/mcp.json
+growth init --target claude     # or cursor / both
 ```
 
 The agent then gets five tools:
 
-- `growth_get_rules` — pull the current growth rules into its context
-- `growth_learn` — record a correction; a rule is extracted, conflict-checked and stored
+- `growth_get_rules` — pull the current rules into context
+- `growth_learn` — record a correction (`rule` + `conflicts_with` for zero-key mode)
 - `growth_resolve` — decide a conflict: `keep-new` / `keep-old` / `keep-both`
 - `growth_rollback` — undo a rule
 - `growth_log` — inspect history
@@ -112,7 +135,7 @@ A minimal loop:
 
 1. Agent does a task.
 2. You correct it once.
-3. The agent calls `growth_learn` on its own.
+3. The agent calls `growth_learn` on its own, passing the extracted rule.
 4. Next session it calls `growth_get_rules` first — and stops making that mistake.
 
 If a correction contradicts an existing rule, the agent gets `status=conflict` back, asks you which one wins, then calls `growth_resolve`.
@@ -122,7 +145,7 @@ If a correction contradicts an existing rule, the agent gets `status=conflict` b
 ## How it works
 
 ```
-correction ──▶ extract (LLM) ──▶ conflict check (LLM) ──▶ store (Git commit)
+correction ──▶ extract (host or LLM) ──▶ conflict check ──▶ store (Git commit)
                                                               │
                               prompt injection ◀── rules block ┘
                                       │
@@ -159,7 +182,7 @@ Never use emojis in code comments.
 python -m unittest discover -s tests -v
 ```
 
-Covers: add → active, conflict gate, `keep-new` / `keep-old` / `keep-both`, rollback restore, MCP surface.
+Covers: add → active, conflict gate, `keep-new` / `keep-old` / `keep-both`, rollback restore, MCP surface, zero-key conflict interception.
 
 ---
 
