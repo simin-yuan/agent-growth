@@ -4,7 +4,7 @@
 
 **给 Agent 记忆装上 Git —— 面向 Claude Code / Cursor 的版本化、冲突拦截、可回滚规则层。零额外 API Key。**
 
-[English](./README.md)
+[English](./README.md) · [FAQ](./FAQ.md)
 
 ![demo](./demo.gif)
 

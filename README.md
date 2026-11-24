@@ -4,7 +4,7 @@
 
 **Git for Agent Memory — versioned, conflict-checked, rollback-able rules for Claude Code & Cursor. Zero extra API key.**
 
-[中文](./README_ZH.md)
+[中文](./README_ZH.md) · [FAQ](./FAQ.md)
 
 ![demo](./demo.gif)
 

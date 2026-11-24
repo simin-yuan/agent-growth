@@ -65,6 +65,7 @@ class RuleStore:
         return meta, m.group(2).strip()
 
     def _write_rule(self, rid: str, meta: dict, body: str) -> pathlib.Path:
+        self.rules_dir.mkdir(parents=True, exist_ok=True)
         path = self.rules_dir / f"{rid}.md"
         path.write_text(
             "---\n" + json.dumps(meta, ensure_ascii=False, indent=2) + "\n---\n\n" + body.strip() + "\n",
@@ -182,10 +183,17 @@ class RuleStore:
 
     def rollback(self, rid: str) -> str:
         path = self.rules_dir / f"{rid}.md"
+        if not path.exists():
+            raise ValueError(f"rule {rid} not found (already rolled back?)")
         rel = self._rel(path)
         r = self._git("log", "--format=%H", "--", rel)
         commits = r.stdout.strip().splitlines()
         if not commits:
             raise ValueError(f"rule {rid} not found in history")
-        self._git("revert", "--no-edit", commits[0])
+        try:
+            self._git("revert", "--no-edit", commits[0])
+        except subprocess.CalledProcessError as exc:
+            self._git("revert", "--abort", check=False)
+            detail = (exc.stderr or "").strip()
+            raise ValueError(f"cannot rollback {rid}: {detail or 'revert failed'}") from exc
         return commits[0]
