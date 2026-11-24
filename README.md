@@ -1,5 +1,7 @@
 # agent-growth
 
+[![agent-growth MCP server](https://glama.ai/mcp/servers/simin-yuan/agent-growth/badges/score.svg)](https://glama.ai/mcp/servers/simin-yuan/agent-growth)
+
 **Git for Agent Memory — versioned, conflict-checked, rollback-able rules for Claude Code & Cursor. Zero extra API key.**
 
 [中文](./README_ZH.md)
