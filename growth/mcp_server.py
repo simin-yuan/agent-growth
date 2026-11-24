@@ -18,7 +18,7 @@ from .extract import extract_rule
 from .inject import build_prompt_block
 from .store import RuleStore
 
-_SERVER_INFO = {"name": "growth", "version": "0.3.0"}
+_SERVER_INFO = {"name": "growth", "version": "0.2.0"}
 
 _INSTRUCTIONS = (
     "agent-growth is a Git-like, conflict-checked growth layer for you. "
