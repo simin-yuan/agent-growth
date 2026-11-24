@@ -1,10 +1,11 @@
 """Zero-dependency MCP server (JSON-RPC 2.0 over stdio).
 
-Exposes four tools:
-    growth_get_rules        -> prompt block of active rules
-    growth_add_correction   -> extract + store a rule from a correction
-    growth_log              -> recent rule history
-    growth_rollback         -> revert a rule by id
+Exposes five tools:
+    growth_get_rules      -> prompt block of active rules
+    growth_learn          -> extract + conflict-check + store a rule from a correction
+    growth_resolve        -> resolve a conflict rule (keep-new / keep-old / keep-both)
+    growth_rollback       -> revert a rule by id
+    growth_log            -> recent rule history
 """
 
 from __future__ import annotations
@@ -17,7 +18,15 @@ from .extract import extract_rule
 from .inject import build_prompt_block
 from .store import RuleStore
 
-_SERVER_INFO = {"name": "growth", "version": "0.1.0"}
+_SERVER_INFO = {"name": "growth", "version": "0.2.0"}
+
+_INSTRUCTIONS = (
+    "agent-growth is a Git-like growth layer. At session start call growth_get_rules and follow them. "
+    "When the user corrects you or states a preference, call growth_learn with the correction. "
+    "If growth_learn returns status=conflict, show the user the conflicting rule and, after they decide, "
+    "call growth_resolve with action keep-new | keep-old | keep-both. "
+    "Report the new rule id and the rollback command."
+)
 
 _TOOLS = [
     {
@@ -26,8 +35,8 @@ _TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "growth_add_correction",
-        "description": "Record a user correction; extract and store a reusable rule.",
+        "name": "growth_learn",
+        "description": "Record a user correction; extract, conflict-check and store a reusable rule.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -38,11 +47,15 @@ _TOOLS = [
         },
     },
     {
-        "name": "growth_log",
-        "description": "Show recent rule history.",
+        "name": "growth_resolve",
+        "description": "Resolve a conflict rule: keep-new, keep-old, or keep-both.",
         "inputSchema": {
             "type": "object",
-            "properties": {"n": {"type": "integer", "default": 20}},
+            "properties": {
+                "rule_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["keep-new", "keep-old", "keep-both"]},
+            },
+            "required": ["rule_id", "action"],
         },
     },
     {
@@ -54,7 +67,21 @@ _TOOLS = [
             "required": ["id"],
         },
     },
+    {
+        "name": "growth_log",
+        "description": "Show recent rule history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"n": {"type": "integer", "default": 20}},
+        },
+    },
 ]
+
+
+def _text(payload) -> dict:
+    if not isinstance(payload, str):
+        payload = json.dumps(payload, ensure_ascii=False)
+    return {"content": [{"type": "text", "text": payload}]}
 
 
 def _handle(msg: dict, store: RuleStore) -> dict | None:
@@ -64,6 +91,7 @@ def _handle(msg: dict, store: RuleStore) -> dict | None:
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
             "serverInfo": _SERVER_INFO,
+            "instructions": _INSTRUCTIONS,
         }
     if method == "tools/list":
         return {"tools": _TOOLS}
@@ -71,39 +99,45 @@ def _handle(msg: dict, store: RuleStore) -> dict | None:
         params = msg.get("params", {})
         name = params.get("name")
         args = params.get("arguments", {}) or {}
+
         if name == "growth_get_rules":
-            return {"content": [{"type": "text", "text": build_prompt_block(store)}]}
-        if name == "growth_add_correction":
+            return _text(build_prompt_block(store))
+
+        if name in ("growth_learn", "growth_add_correction"):
             rule = extract_rule(args.get("correction", ""), args.get("context", ""))
             if not rule:
-                return {"content": [{"type": "text", "text": "NONE: not a reusable rule"}]}
+                return _text({"status": "skipped", "reason": "not a reusable rule"})
             conf = check_conflict(rule, store.active_rules())
-            rid = store.add_rule(rule, source="mcp", status="conflict" if conf["conflict"] else "active")
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(
-                            {"id": rid, "rule": rule, "conflict": conf}, ensure_ascii=False
-                        ),
-                    }
-                ]
-            }
-        if name == "growth_log":
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(store.log(args.get("n", 20)), ensure_ascii=False),
-                    }
-                ]
-            }
+            status = "conflict" if conf["conflict"] else "active"
+            rid = store.add_rule(
+                rule,
+                source="mcp",
+                status=status,
+                conflicts_with=conf["ids"] if conf["conflict"] else None,
+            )
+            payload = {"id": rid, "rule": rule, "status": status, "rollback": f"growth rollback {rid}"}
+            if conf["conflict"]:
+                payload["conflict"] = {"reason": conf["reason"], "ids": conf["ids"]}
+                payload["hint"] = "call growth_resolve(rule_id, action) after the user decides"
+            return _text(payload)
+
+        if name == "growth_resolve":
+            try:
+                res = store.resolve(args["rule_id"], args["action"])
+            except Exception as exc:  # noqa: BLE001
+                return {**_text(f"error: {exc}"), "isError": True}
+            return _text(res)
+
         if name == "growth_rollback":
             try:
                 commit = store.rollback(args["id"])
             except Exception as exc:  # noqa: BLE001
-                return {"content": [{"type": "text", "text": f"error: {exc}"}], "isError": True}
-            return {"content": [{"type": "text", "text": f"reverted {commit}"}]}
+                return {**_text(f"error: {exc}"), "isError": True}
+            return _text(f"reverted {commit}")
+
+        if name == "growth_log":
+            return _text(store.log(args.get("n", 20)))
+
     return None
 
 
